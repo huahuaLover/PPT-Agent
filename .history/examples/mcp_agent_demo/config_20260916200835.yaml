@@ -1,0 +1,21 @@
+research_agent:
+  base_url: "https://api.zhizengzeng.com/v1"
+  model: "claude-sonnet-4-6"
+  api_key: "sk-zk23dce14fe52689cc80ca181b3f86d2b8a6a8897d9925bc"
+  temperature: 0.2
+  max_turns: 10
+
+design_agent:
+  base_url: "https://api.zhizengzeng.com/v1"
+  model: "google/gemini-3-pro-preview"
+  api_key: "sk-zk23dce14fe52689cc80ca181b3f86d2b8a6a8897d9925bc"
+  temperature: 0.2
+  max_turns: 10
+
+search:
+  api_key: ""
+  max_results: 5
+
+runtime:
+  workspace_base: "workspace"
+  mcp_config_file: "mcp.json"

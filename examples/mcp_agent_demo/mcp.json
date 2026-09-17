@@ -1,0 +1,7 @@
+[
+  {
+    "name": "demo_tools",
+    "command": "python",
+    "args": ["tools/server.py"]
+  }
+]

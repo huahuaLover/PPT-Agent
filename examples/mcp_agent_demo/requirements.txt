@@ -1,0 +1,8 @@
+fastmcp>=2.10.0,<2.14.0
+mcp>=1.14.0
+openai>=1.108.2
+pydantic>=2.11.9
+PyYAML
+Jinja2>=3.1.6
+tavily-python>=0.7.14
+python-pptx>=0.6.21
