@@ -261,7 +261,7 @@ async def inspect_slide(
     """Validate one HTML slide, render its preview, and return visual feedback."""
 
     html_path, _ = validate_slide_path(html_file, expected_pages)
-    # 当前幻灯片是第几次被检查
+    # 当前
     state = load_inspection_state()
     previous = state.get(html_path.name, {})
     attempt = int(previous.get("attempts", 0)) + 1

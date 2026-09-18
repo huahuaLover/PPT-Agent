@@ -19,6 +19,8 @@ class ModelConfig(BaseModel):
     api_key: SecretStr = Field(min_length=1)
     temperature: float | None = Field(default=0.2, ge=0, le=2)
     max_turns: int = Field(default=10, gt=0)
+    max_retries: int = Field(default=3, ge=1, le=5)
+    supports_vision: bool = False
 
 
 class SearchConfig(BaseModel):
@@ -26,6 +28,8 @@ class SearchConfig(BaseModel):
 
     api_key: SecretStr = Field(min_length=1)
     max_results: int = Field(default=5, ge=1, le=10)
+    max_content_chars: int = Field(default=1500, ge=300, le=5000)
+    max_image_results: int = Field(default=4, ge=1, le=8)
 
 
 class RuntimeConfig(BaseModel):
@@ -33,6 +37,11 @@ class RuntimeConfig(BaseModel):
 
     workspace_base: Path = Path("workspace")
     mcp_config_file: Path = Path("mcp.json")
+    aspect_ratio: Literal["16:9"] = "16:9"
+    max_slide_revisions: int = Field(default=3, ge=1, le=8)
+    enable_visual_review: bool = True
+    tool_timeout_seconds: int = Field(default=120, ge=30, le=600)
+    soft_parsing: bool = False
 
 
 class AppConfig(BaseModel):
@@ -108,11 +117,29 @@ class AgentEvent(BaseModel):
     is_error: bool = False
 
 
+class ToolImage(BaseModel):
+    """An image returned by an MCP tool."""
+
+    mime_type: str
+    data: str
+
+
 class ToolObservation(BaseModel):
     """A normalized result returned by AgentEnv."""
 
     tool_call_id: str
     tool_name: str
     text: str
+    images: list[ToolImage] = Field(default_factory=list)
     is_error: bool = False
     arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExportResult(BaseModel):
+    """Artifacts produced by the deterministic HTML export step."""
+
+    final_path: Path
+    pptx_path: Path | None
+    pdf_path: Path
+    preview_dir: Path
+    pptx_error: str | None = None

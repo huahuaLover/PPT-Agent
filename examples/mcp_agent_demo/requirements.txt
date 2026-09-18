@@ -6,3 +6,9 @@ PyYAML
 Jinja2>=3.1.6
 tavily-python>=0.7.14
 python-pptx>=0.6.21
+httpx
+Pillow
+playwright>=1.55.0
+pdf2image
+pypdf>=6.1.1
+fake-useragent>=2.2.0

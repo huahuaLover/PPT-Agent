@@ -1,8 +1,10 @@
 # Demo 优化清单
 
+PPT 质量升级的完整范围参见 [PPT_QUALITY_REQUIREMENTS.md](PPT_QUALITY_REQUIREMENTS.md)，实现规格参见 [PPT_QUALITY_TECHNICAL_DESIGN.md](PPT_QUALITY_TECHNICAL_DESIGN.md)。
+
 ## 待优化
 
-- [ ] **P0：提升 PPT 的视觉质量和信息表达能力**
+- [x] **P0：提升 PPT 的视觉质量和信息表达能力**
 
   **现状**
 
@@ -10,14 +12,14 @@
 
   **优化方案**
 
-  第一阶段先扩展原生 `python-pptx` 渲染能力：
+  第一阶段复现原项目的 HTML/CSS Design 路线：
 
-  - 建立统一主题，配置颜色、字体、字号、间距和页脚。
-  - 支持封面、章节页、普通要点、双栏、数据卡片、时间线和总结页等布局。
-  - 扩展 `slides.json`，让 Design Agent 为每页明确输出 `layout` 和结构化内容。
-  - 根据文字长度调整字号，并限制每页信息量，避免溢出和内容堆积。
+  - Design 先生成统一的 `global.css`，再逐页生成独立 HTML。
+  - 支持封面、章节、双栏、图文、数据卡片、时间线和总结等动态布局。
+  - 每页生成后调用 `inspect_slide`，根据转换错误或页面截图完成修正。
+  - 复用原项目的 HTML → PPTX/PDF 转换能力。
 
-  第二阶段再增加图片、图表以及渲染后的视觉检查，避免第一版同时引入过多复杂度。
+  同时补齐图片搜索、下载和可配置的多模态视觉检查。
 
   **预期收益**
 
@@ -34,19 +36,19 @@
   - Design Agent 能根据内容语义选择合适布局。
   - 生成的 PPTX 可以被 PowerPoint 或 LibreOffice 正常打开。
 
-- [ ] 限制 Tavily 搜索结果长度，降低 Research Agent 的 Token 消耗
+- [x] 限制 Tavily 搜索结果长度，降低 Research Agent 的 Token 消耗
 
   **现状**
 
-  `search_web` 会将 Tavily 返回的网页内容完整写入工具结果。工具结果进入 `chat_history` 后，会在后续每一轮模型请求中重复发送。本次实际运行中，Research Agent 总计消耗约 6 万 Token。
+  `search_web` 当前使用硬编码字符数截断 Tavily 内容，无法通过配置针对模型上下文调整。工具结果进入 `chat_history` 后，会在后续每一轮模型请求中重复发送。本次实际运行中，Research Agent 总计消耗约 6 万 Token。
 
   **优化方案**
 
-  在 `tools/server.py` 中限制每条搜索结果的正文长度，只保留标题、URL 和核心摘要。建议初始上限为 1,500 个字符：
+  将每条搜索结果的正文上限放入 `config.yaml`，只保留标题、URL 和核心摘要。建议默认值为 1,500 个字符：
 
-  ```python
-  MAX_SEARCH_CONTENT_CHARS = 1_500
-  content = str(item.get("content", ""))[:MAX_SEARCH_CONTENT_CHARS]
+  ```yaml
+  search:
+    max_content_chars: 1500
   ```
 
   同时继续使用 `search.max_results` 控制单次搜索返回数量。
@@ -66,4 +68,6 @@
 
 ## 已完成
 
-暂无。
+- HTML/CSS 多布局生成、逐页检查和 PPTX/PDF 导出链路。
+- 图片搜索、受限下载和支持视觉模型的截图反馈。
+- 搜索摘要长度配置、模型重试及脱敏错误日志。

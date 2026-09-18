@@ -9,6 +9,7 @@ from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
 
 from agents import Design, Research
+from conversion import export_slides
 from env import AgentEnv
 from models import AgentEvent, AppConfig, InputRequest
 
@@ -48,7 +49,6 @@ class AgentLoop:
                         self.intermediate_output["manuscript"] = event.content
                     yield event
             finally:
-                # 交互过程记录下来，方便每次排查问题
                 research.save_history()
 
             if manuscript_path is None:
@@ -62,26 +62,42 @@ class AgentLoop:
                 language=request.language,
                 role_file=DEMO_ROOT / "roles" / "Design.yaml",
             )
+            slides_dir: Path | None = None
             try:
                 async for event in design.loop(request, manuscript_path):
                     if event.kind == "final":
-                        slides_spec = self.workspace / "slides.json"
-                        if slides_spec.is_file():
-                            self.intermediate_output["slides_spec"] = str(slides_spec)
-                        self.intermediate_output["final"] = event.content
+                        slides_dir = Path(event.content)
+                        self.intermediate_output["slides_dir"] = event.content
                     yield event
             finally:
                 design.save_history()
 
-        final_path = self.intermediate_output.get("final")
-        if final_path is None:
-            raise RuntimeError("Workflow finished without a PowerPoint result")
+        if slides_dir is None:
+            raise RuntimeError("Design finished without an inspected slides directory")
+        export = await export_slides(
+            slides_dir=slides_dir,
+            workspace=self.workspace,
+            expected_pages=request.pages,
+            aspect_ratio=self.config.runtime.aspect_ratio,
+            soft_parsing=self.config.runtime.soft_parsing,
+        )
+        self.intermediate_output.update(
+            {
+                "preview_dir": str(export.preview_dir),
+                "pdf": str(export.pdf_path),
+                "final": str(export.final_path),
+            }
+        )
+        if export.pptx_path is not None:
+            self.intermediate_output["pptx"] = str(export.pptx_path)
+        if export.pptx_error is not None:
+            self.intermediate_output["pptx_error"] = export.pptx_error
         self._write_json("intermediate_output.json", self.intermediate_output)
         yield AgentEvent(
             kind="final",
             stage="workflow",
             agent="AgentLoop",
-            content=final_path,
+            content=str(export.final_path),
         )
 
     def _write_json(self, filename: str, data: object) -> None:
@@ -95,7 +111,7 @@ class AgentLoop:
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="Generate a basic PowerPoint with two real LLM agents and MCP tools."
+        description="Generate slides with two real LLM agents and MCP tools."
     )
     parser.add_argument("prompt", help="Presentation topic or instruction")
     parser.add_argument("--pages", type=int, default=5, help="Total slides (2-20)")
@@ -103,7 +119,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--output",
         type=Path,
         default=None,
-        help="Optional path for an additional copy of the PowerPoint",
+        help="Optional path for an additional copy of the final artifact",
     )
     parser.add_argument(
         "--language",
@@ -167,10 +183,14 @@ async def run_cli(args: argparse.Namespace) -> Path:
             print_event(event)
 
     if final_path is None:
-        raise RuntimeError("Workflow did not return a final PowerPoint")
+        raise RuntimeError("Workflow did not return a final artifact")
     output_path = final_path.resolve()
     if args.output is not None:
         output_path = args.output.resolve()
+        if output_path.suffix.lower() != final_path.suffix.lower():
+            raise ValueError(
+                f"Output suffix must be {final_path.suffix} for the generated artifact"
+            )
         output_path.parent.mkdir(parents=True, exist_ok=True)
         if output_path != final_path.resolve():
             shutil.copy2(final_path, output_path)

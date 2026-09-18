@@ -1,5 +1,7 @@
 """A small, explicit tool-calling agent implementation."""
 
+import asyncio
+import copy
 import json
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
@@ -7,7 +9,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from jinja2 import StrictUndefined, Template
-from openai import AsyncOpenAI
+from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI
 from openai.types.chat import ChatCompletionMessage
 from openai.types.chat.chat_completion_message_function_tool_call import (
     ChatCompletionMessageFunctionToolCall,
@@ -29,7 +31,9 @@ class Agent:
         workspace: Path,
         language: Literal["zh", "en"],
         role_file: Path,
-        expected_suffix: str,
+        expected_outcome_name: str,
+        expected_outcome_kind: Literal["file", "directory"],
+        expected_suffix: str | None,
         required_tools_before_finalize: set[str],
     ) -> None:
         self.name = name
@@ -38,6 +42,8 @@ class Agent:
         self.env = env
         self.workspace = workspace.resolve()
         self.language = language
+        self.expected_outcome_name = expected_outcome_name
+        self.expected_outcome_kind = expected_outcome_kind
         self.expected_suffix = expected_suffix
         self.required_tools_before_finalize = required_tools_before_finalize
         self.turn_count = 0
@@ -53,12 +59,13 @@ class Agent:
         self.prompt = Template(role.instruction, undefined=StrictUndefined)
         self.allowed_tools = set(role.tools)
         self.tools = env.get_tools(self.allowed_tools)
-        # 对话的第一条消息
         self.chat_history: list[dict[str, Any]] = [
             {"role": "system", "content": role.system[language]}
         ]
         client_kwargs: dict[str, Any] = {
-            "api_key": self.model_config.api_key.get_secret_value()
+            "api_key": self.model_config.api_key.get_secret_value(),
+            "max_retries": 0,
+            "timeout": 120,
         }
         if self.model_config.base_url:
             client_kwargs["base_url"] = self.model_config.base_url
@@ -71,7 +78,6 @@ class Agent:
             raise RuntimeError(
                 f"{self.name} exceeded max turns: {self.model_config.max_turns}"
             )
-            # 用户的提示词
         if len(self.chat_history) == 1:
             self.chat_history.append(
                 {
@@ -79,7 +85,6 @@ class Agent:
                     "content": self.prompt.render(**prompt_context),
                 }
             )
-# 发送给大模型的参数
         request: dict[str, Any] = {
             "model": self.model_config.model,
             "messages": self.chat_history,
@@ -89,13 +94,11 @@ class Agent:
         if self.model_config.temperature is not None:
             request["temperature"] = self.model_config.temperature
 
-        response = await self.client.chat.completions.create(**request)
+        response = await self._request_model(request)
         if not response.choices:
             raise RuntimeError(f"{self.name} model returned no choices")
         message = response.choices[0].message
-        # 加入到chat_history
         self._append_assistant_message(message)
-        # 更新token数量
         self._update_usage(response.usage)
         if not message.tool_calls:
             raise RuntimeError(
@@ -103,6 +106,51 @@ class Agent:
                 "Use a model that supports Chat Completions Tool Calling."
             )
         return message
+
+    async def _request_model(self, request: dict[str, Any]) -> Any:
+        """Call the model with bounded retries for transient failures."""
+        for attempt in range(1, self.model_config.max_retries + 1):
+            try:
+                return await self.client.chat.completions.create(**request)
+            except (APIConnectionError, APITimeoutError, APIStatusError) as error:
+                self._record_model_error(error, attempt)
+                if attempt == self.model_config.max_retries or not self._retryable(
+                    error
+                ):
+                    raise
+                await asyncio.sleep(min(2 ** (attempt - 1), 8))
+        raise RuntimeError("Model request retry loop exited unexpectedly")
+
+    @staticmethod
+    def _retryable(error: Exception) -> bool:
+        if isinstance(error, (APIConnectionError, APITimeoutError)):
+            return True
+        return isinstance(error, APIStatusError) and error.status_code in {
+            429,
+            500,
+            502,
+            503,
+            504,
+        }
+
+    def _record_model_error(self, error: Exception, attempt: int) -> None:
+        """Persist a redacted model error without storing request secrets."""
+        history_dir = self.workspace / "history"
+        history_dir.mkdir(parents=True, exist_ok=True)
+        status_code = getattr(error, "status_code", None)
+        message = str(error)
+        for model in (self.config.research_agent, self.config.design_agent):
+            message = message.replace(model.api_key.get_secret_value(), "***")
+        entry = {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "agent": self.name,
+            "attempt": attempt,
+            "error_type": type(error).__name__,
+            "status_code": status_code,
+            "message": message[:2000],
+        }
+        with (history_dir / "run-errors.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     async def execute(
         self,
@@ -117,7 +165,6 @@ class Agent:
             try:
                 raw_arguments = tool_call.function.arguments or "{}"
                 arguments = json.loads(raw_arguments)
-                # 如果解析参数不是字典，就报错
                 if not isinstance(arguments, dict):
                     raise ValueError("Tool arguments must be a JSON object")
                 if tool_name == "finalize":
@@ -148,15 +195,42 @@ class Agent:
                     final_path = None
 
             observations.append(observation)
+
+        for observation in observations:
             self.chat_history.append(
                 {
                     "role": "tool",
                     "tool_call_id": observation.tool_call_id,
-                    "content": observation.text,
+                    "content": observation.text or "Tool completed.",
                 }
             )
+        for observation in observations:
+            self._append_observation_images(observation)
 
         return observations, final_path
+
+    def _append_observation_images(self, observation: ToolObservation) -> None:
+        """Add rendered slide previews to the next model request."""
+        if not observation.images:
+            return
+        content: list[dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": (
+                    "Rendered preview from inspect_slide. Review hierarchy, spacing, "
+                    "clipping, overlap, contrast, and image cropping. Fix the HTML and "
+                    "inspect it again if needed."
+                ),
+            }
+        ]
+        for image in observation.images:
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{image.mime_type};base64,{image.data}"},
+                }
+            )
+        self.chat_history.append({"role": "user", "content": content})
 
     def _validate_finalize_arguments(self, arguments: dict[str, Any]) -> None:
         """Require finalize to receive only the expected artifact path."""
@@ -167,15 +241,15 @@ class Agent:
             raise ValueError(
                 "finalize outcome must contain only a file path, not a summary"
             )
-        if Path(outcome).suffix.lower() != self.expected_suffix:
-            example = (
-                "manuscript.md" if self.expected_suffix == ".md" else "result.pptx"
-            )
+        if outcome != self.expected_outcome_name:
             raise ValueError(
-                f"finalize outcome must be a {self.expected_suffix} file path; "
-                f"use {example}"
+                f"finalize outcome must be exactly {self.expected_outcome_name}"
             )
-# 执行的主要过程
+        if self.expected_outcome_kind == "directory":
+            expected_pages = arguments.get("expected_pages")
+            if not isinstance(expected_pages, int):
+                raise ValueError("Design finalize requires integer expected_pages")
+
     async def run_tool_loop(
         self,
         prompt_context: dict[str, object],
@@ -193,7 +267,6 @@ class Agent:
             )
 
             observations, final_path = await self.execute(message.tool_calls or [])
-            # 向外边报告工具执行情况
             for observation in observations:
                 yield AgentEvent(
                     kind="tool",
@@ -218,7 +291,7 @@ class Agent:
         history_dir.mkdir(parents=True, exist_ok=True)
         history_file = history_dir / f"{self.name}-history.jsonl"
         with history_file.open("w", encoding="utf-8") as stream:
-            for message in self.chat_history:
+            for message in self._history_for_disk():
                 entry = {
                     "timestamp": datetime.now(UTC).isoformat(),
                     "message": message,
@@ -230,6 +303,21 @@ class Agent:
             json.dumps(self.usage, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+
+    def _history_for_disk(self) -> list[dict[str, Any]]:
+        """Return a history copy with inline image data removed."""
+        history = copy.deepcopy(self.chat_history)
+
+        def sanitize(value: Any) -> Any:
+            if isinstance(value, str) and value.startswith("data:image/"):
+                return "<image omitted; see workspace previews>"
+            if isinstance(value, list):
+                return [sanitize(item) for item in value]
+            if isinstance(value, dict):
+                return {key: sanitize(item) for key, item in value.items()}
+            return value
+
+        return sanitize(history)
 
     def _append_assistant_message(self, message: ChatCompletionMessage) -> None:
         assistant: dict[str, Any] = {
@@ -264,9 +352,15 @@ class Agent:
         )
         if not candidate.is_relative_to(self.workspace):
             raise RuntimeError(f"Final path is outside workspace: {raw_path}")
-        if candidate.suffix.lower() != self.expected_suffix or not candidate.is_file():
+        if self.expected_outcome_kind == "file":
+            valid = candidate.is_file() and candidate.stat().st_size > 0
+            valid = valid and candidate.suffix.lower() == self.expected_suffix
+        else:
+            valid = candidate.is_dir()
+        if not valid:
             raise RuntimeError(
-                f"{self.name} returned an invalid {self.expected_suffix} file: {raw_path}"
+                f"{self.name} returned an invalid {self.expected_outcome_kind}: "
+                f"{raw_path}"
             )
         return str(candidate)
 

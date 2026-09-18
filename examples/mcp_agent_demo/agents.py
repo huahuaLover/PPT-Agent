@@ -27,6 +27,8 @@ class Research(Agent):
             workspace=workspace,
             language=language,
             role_file=role_file,
+            expected_outcome_name="manuscript.md",
+            expected_outcome_kind="file",
             expected_suffix=".md",
             required_tools_before_finalize={"search_web", "write_file"},
         )
@@ -35,7 +37,6 @@ class Research(Agent):
         self,
         request: InputRequest,
     ) -> AsyncGenerator[AgentEvent, None]:
-    # 在这里面进行调用
         async for event in self.run_tool_loop(
             {
                 "prompt": request.prompt,
@@ -65,8 +66,10 @@ class Design(Agent):
             workspace=workspace,
             language=language,
             role_file=role_file,
-            expected_suffix=".pptx",
-            required_tools_before_finalize={"read_file", "write_file", "create_pptx"},
+            expected_outcome_name="slides",
+            expected_outcome_kind="directory",
+            expected_suffix=None,
+            required_tools_before_finalize={"read_file", "write_file", "inspect_slide"},
         )
 
     async def loop(

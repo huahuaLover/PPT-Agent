@@ -11,9 +11,9 @@ from typing import Any
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from mcp.types import TextContent
+from mcp.types import ImageContent, TextContent
 
-from models import AppConfig, MCPServerConfig, ToolObservation
+from models import AppConfig, MCPServerConfig, ToolImage, ToolObservation
 
 
 class AgentEnv:
@@ -61,7 +61,6 @@ class AgentEnv:
         return [MCPServerConfig.model_validate(item) for item in data]
 
     async def _connect_server(self, server: MCPServerConfig) -> None:
-        # self._sessions保存已经连接的Server
         if server.name in self._sessions:
             raise ValueError(f"Duplicate MCP server name: {server.name}")
 
@@ -74,6 +73,14 @@ class AgentEnv:
                 "WORKSPACE": str(self.workspace),
                 "TAVILY_API_KEY": self.config.search.api_key.get_secret_value(),
                 "SEARCH_MAX_RESULTS": str(self.config.search.max_results),
+                "SEARCH_MAX_CONTENT_CHARS": str(self.config.search.max_content_chars),
+                "SEARCH_MAX_IMAGE_RESULTS": str(self.config.search.max_image_results),
+                "MAX_SLIDE_REVISIONS": str(self.config.runtime.max_slide_revisions),
+                "ENABLE_VISUAL_REVIEW": str(
+                    self.config.runtime.enable_visual_review
+                    and self.config.design_agent.supports_vision
+                ).lower(),
+                "ASPECT_RATIO": self.config.runtime.aspect_ratio,
                 "FASTMCP_LOG_LEVEL": "ERROR",
                 "PYTHONDONTWRITEBYTECODE": "1",
             }
@@ -85,14 +92,15 @@ class AgentEnv:
             cwd=str(self.demo_root),
         )
         read_stream, write_stream = await self._stack.enter_async_context(
-            # 启动子进程，建立MCP通信
             stdio_client(params)
         )
         session = await self._stack.enter_async_context(
             ClientSession(
                 read_stream,
                 write_stream,
-                read_timeout_seconds=timedelta(seconds=60),
+                read_timeout_seconds=timedelta(
+                    seconds=self.config.runtime.tool_timeout_seconds
+                ),
             )
         )
         await session.initialize()
@@ -110,7 +118,6 @@ class AgentEnv:
                     "parameters": tool.inputSchema,
                 },
             }
-            # 建立映射表
             self._tool_to_server[tool.name] = server.name
 
     def _resolve_arg(self, arg: str) -> str:
@@ -121,7 +128,6 @@ class AgentEnv:
 
     def get_tools(self, allowed_names: set[str]) -> list[dict[str, Any]]:
         """Return OpenAI tool schemas after validating an agent allowlist."""
-        # 查找不存在的tools
         missing = allowed_names - self._tools.keys()
         if missing:
             names = ", ".join(sorted(missing))
@@ -145,7 +151,6 @@ class AgentEnv:
             )
             self._record(observation)
             return observation
-            # 查询属于哪个MCP Server
         server_name = self._tool_to_server.get(tool_name)
         if server_name is None:
             observation = self._error_observation(
@@ -159,21 +164,25 @@ class AgentEnv:
 
         try:
             result = await asyncio.wait_for(
-                # 向对应的 MCP Server 发送工具调用请求
-                # 内部会使用 write_stream 发送 MCP 请求，并通过 read_stream 等待响应。
                 self._sessions[server_name].call_tool(tool_name, arguments),
-                timeout=60,
+                timeout=self.config.runtime.tool_timeout_seconds,
             )
-            unsupported = [
-                block for block in result.content if not isinstance(block, TextContent)
-            ]
-            if unsupported:
-                raise ValueError("The demo supports text MCP results only")
-            text = "\n".join(block.text for block in result.content).strip()
+            texts: list[str] = []
+            images: list[ToolImage] = []
+            for block in result.content:
+                if isinstance(block, TextContent):
+                    texts.append(block.text)
+                elif isinstance(block, ImageContent):
+                    images.append(ToolImage(mime_type=block.mimeType, data=block.data))
+                else:
+                    raise ValueError(
+                        f"Unsupported MCP content block: {type(block).__name__}"
+                    )
             observation = ToolObservation(
                 tool_call_id=tool_call_id,
                 tool_name=tool_name,
-                text=text,
+                text="\n".join(texts).strip(),
+                images=images,
                 is_error=bool(result.isError),
                 arguments=arguments,
             )
@@ -216,6 +225,8 @@ class AgentEnv:
                 "tool_name": observation.tool_name,
                 "arguments": safe_arguments,
                 "result": observation.text,
+                "image_count": len(observation.images),
+                "image_mime_types": [image.mime_type for image in observation.images],
                 "is_error": observation.is_error,
             }
         )

@@ -3,7 +3,8 @@
 一个用于学习 Agent 核心机制的独立 Demo。它使用真实大模型、真实 Tavily 搜索和 stdio MCP 工具，按固定顺序运行：
 
 ```text
-Research Agent → manuscript.md → Design Agent → result.pptx
+Research Agent → manuscript.md + assets/ → Design Agent → HTML slides
+→ inspect_slide → result.pptx + result.pdf + previews/
 ```
 
 ## 你能从中学到什么
@@ -52,7 +53,15 @@ uv run python examples/mcp_agent_demo/main.py \
   --language zh
 ```
 
-最终 PPTX 默认保存在本次运行的 `workspace/<session-id>/result.pptx`。如需额外复制到指定位置，再传入 `--output <路径>`。
+首次运行前安装 Chromium：
+
+```bash
+uv run playwright install chromium
+```
+
+最终 PPTX 默认保存在本次运行的 `workspace/<session-id>/result.pptx`。如果
+PPTX 转换失败，程序会保留错误日志并返回 `result.pdf`。如需额外复制到指定位置，
+再传入与最终产物后缀一致的 `--output <路径>`。
 
 每次运行会保留独立工作区：
 
@@ -60,8 +69,14 @@ uv run python examples/mcp_agent_demo/main.py \
 examples/mcp_agent_demo/workspace/<session-id>/
 ├── request.json
 ├── manuscript.md
-├── slides.json
+├── assets/
+├── slides/
+│   ├── global.css
+│   ├── slide_01.html
+│   └── ...
 ├── result.pptx
+├── result.pdf
+├── previews/
 ├── intermediate_output.json
 └── history/
 ```
@@ -74,7 +89,15 @@ main.py
 → agent.py
 → env.py
 → tools/server.py
+→ conversion.py
 → roles/*.yaml
+```
+
+## 验证
+
+```bash
+.venv/bin/ruff check examples/mcp_agent_demo
+.venv/bin/pytest examples/mcp_agent_demo/test -q
 ```
 
 ## 常见错误
@@ -99,3 +122,5 @@ main.py
 
 - [需求文档](REQUIREMENTS.md)
 - [技术设计](TECHNICAL_DESIGN.md)
+- [PPT 质量优化需求](PPT_QUALITY_REQUIREMENTS.md)
+- [PPT 质量优化技术设计](PPT_QUALITY_TECHNICAL_DESIGN.md)

@@ -3,19 +3,30 @@ research_agent:
   model: "anthropic/claude-sonnet-4.5"
   api_key: "your_key"
   temperature: 0.2
-  max_turns: 10
+  max_turns: 12
+  max_retries: 3
+  supports_vision: false
 
 design_agent:
   base_url: "https://openrouter.ai/api/v1"
   model: "google/gemini-3-pro-preview"
   api_key: "your_key"
   temperature: 0.2
-  max_turns: 10
+  max_turns: 40
+  max_retries: 3
+  supports_vision: true
 
 search:
   api_key: "your_key"
   max_results: 5
+  max_content_chars: 1500
+  max_image_results: 4
 
 runtime:
   workspace_base: "workspace"
   mcp_config_file: "mcp.json"
+  aspect_ratio: "16:9"
+  max_slide_revisions: 3
+  enable_visual_review: true
+  tool_timeout_seconds: 120
+  soft_parsing: false
